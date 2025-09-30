@@ -62,3 +62,7 @@ uvicorn
 uvloop
 watchfiles
 websockets
+openai
+aiohttp
+nest-asyncio
+python-dotenv

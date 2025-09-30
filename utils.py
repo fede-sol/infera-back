@@ -2,6 +2,7 @@ import os
 import uuid
 import boto3
 from typing import Optional, Dict, Any
+import json
 
 # Conexión a DynamoDB
 def get_dynamodb_connection() -> Optional[boto3.resource]:
@@ -45,7 +46,6 @@ def save_to_dynamodb(table: Any, item: Dict[str, Any]) -> bool:
         bool: True si se guardó exitosamente, False en caso contrario
     """
     try:
-        print(f"Guardando item en DynamoDB: {item}")
         table.put_item(Item=item)
         print("Item guardado exitosamente.")
         return True
@@ -101,3 +101,74 @@ def create_slack_message_item(slack_data: Dict[str, Any]) -> Dict[str, Any]:
         'rawData': slack_data,  # Guardar los datos completos por si acaso
         'processedAt': str(uuid.uuid1().time),  # Timestamp de procesamiento
     }
+
+
+def background_analysis_task(message: str, openai_adapter, table):
+    """Función que se ejecuta en segundo plano"""
+    print("---------------------------------background_analysis_task---------------------------------")
+
+
+    try:
+        # Verificar que los adaptadores estén disponibles
+        if not openai_adapter:
+            print("❌ Adaptadores no disponibles")
+            return {
+                "response": "Lo siento, los servicios de IA no están disponibles en este momento.",
+                "error": "Adaptadores no inicializados",
+                "tool_results": []
+            }
+
+        result = openai_adapter.chat(
+            message=message,
+        )
+
+        print("✅ Respuesta de OpenAI recibida")
+        response_data = {
+            "message": message,
+            "response": result["response"],
+            "tool_calls": result["tool_calls"],
+            "tool_stats": result["tool_stats"],
+            #"conversation_length": len(result["conversation_history"]),
+            "timestamp": json.dumps({"processed": True})
+        }
+
+        # Si se ejecutaron tools, agregar información adicional
+        if result["tool_calls"]:
+            # Usar estadísticas pre-calculadas del adapter
+            response_data["tools_executed"] = result["tool_stats"]["total"]
+            response_data["successful_tools"] = result["tool_stats"]["successful"]
+            response_data["failed_tools"] = result["tool_stats"]["failed"]
+            response_data["success_rate"] = result["tool_stats"]["success_rate"]
+
+            print(f"📊 RESULTADOS: {response_data['tools_executed']} tools ejecutadas - {response_data['successful_tools']} exitosas ({response_data['success_rate']}% éxito)")
+
+        # Opcional: guardar en DynamoDB si hay resultados de tools
+        if table and result["tool_calls"]:
+            try:
+                analysis_item = {
+                    "messageId": f"analysis_{hash(message)}",
+                    "originalMessage": message,
+                    "aiResponse": result["content"] if result.get("content") else str(result["response"]),
+                    "toolsUsed": result["tool_stats"]["total"],
+                    "toolsSuccessful": result["tool_stats"]["successful"],
+                    "toolsFailed": result["tool_stats"]["failed"],
+                    "successRate": int(result["tool_stats"]["success_rate"]),
+                    "timestamp": str(hash(str(result["tool_calls"])))
+                }
+                success = save_to_dynamodb(table, analysis_item)
+                response_data["saved_to_db"] = success
+                if success:
+                    print("💾 Guardado en base de datos")
+            except Exception as db_error:
+                print(f"❌ Error guardando en DB: {db_error}")
+                response_data["saved_to_db"] = False
+
+        print("🎉 Análisis completado exitosamente")
+        return response_data
+    except Exception as e:
+        print(f"❌ Error en análisis: {e}")
+        return {
+            "response": f"Error procesando la solicitud: {str(e)}",
+            "error": True,
+            "tool_results": []
+        }
