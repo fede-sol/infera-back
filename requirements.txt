@@ -66,3 +66,11 @@ openai
 aiohttp
 nest-asyncio
 python-dotenv
+langchain
+langchain-openai
+langchain-core
+langchain-community
+langchain-experimental
+langchain-huggingface
+langchain-mcp-adapters
+langsmith

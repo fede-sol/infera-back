@@ -2,10 +2,8 @@ import json
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 from transformers import pipeline
-from adapters.openai_adapter_v2 import OpenAIAdapterV2
+from langchain_mcp_agent import LangChainMCPAgent
 from utils import get_table, save_to_dynamodb, create_classification_item, create_slack_message_item, background_analysis_task
-from adapters.openai_adapter import OpenAIAdapter
-from adapters.notion_adapter import NotionAdapter
 from resources.system_prompt import ai_instructions
 from dotenv import load_dotenv
 import os
@@ -21,28 +19,48 @@ print("Modelo cargado exitosamente.")
 # Inicializar tabla de DynamoDB
 TABLE = get_table()
 
-# --- Inicialización de Adaptadores ---
-print("🚀 Iniciando adaptadores...")
+# --- Inicialización de Agente LangChain con MCP ---
+print("🚀 Iniciando agente LangChain MCP...")
 try:
-    # Inicializar adaptador de Notion
-    notion_adapter = NotionAdapter(api_key=os.getenv('NOTION_TOKEN'))
-    print("✅ Adaptador de Notion inicializado")
+    # Inicializar agente de LangChain con MCP oficial
+    langchain_agent = LangChainMCPAgent(
+        api_key=os.getenv('OPENAI_TOKEN'),
+        model="openai:gpt-5-mini",
+        instructions=ai_instructions,
+        temperature=0,
+        max_iterations=30,
+        langsmith_project="infera-back-mcp"
+    )
+    print("✅ Agente de LangChain MCP inicializado")
 
-    # Inicializar adaptador de OpenAI
-    openai_adapter = OpenAIAdapterV2(api_key=os.getenv('OPENAI_TOKEN'),instructions=ai_instructions)
-    print("✅ Adaptador de OpenAI inicializado")
-
-    # Configurar integraciones
-    openai_adapter.add_mcp_tool(server_label="Notion", server_description="Realizar acciones en Notion", server_url="https://f2a65189bb2c.ngrok-free.app/mcp")
-    openai_adapter.add_mcp_tool(server_label="GitHub", server_description="Realizar acciones en GitHub", server_url="https://api.githubcopilot.com/mcp/",allowed_tools=["search_code","search_repositories"], authorization=os.getenv('GITHUB_TOKEN'))
-    openai_adapter.add_mcp_tool(server_label="Get_Github_File_Content", server_description="Obtener el contenido de un archivo en GitHub", server_url="https://f2a65189bb2c.ngrok-free.app/mcp")
-    print("✅ Todas las herramientas configuradas")
-
-
+    # Configurar servidores MCP
+    langchain_agent.add_mcp_tool(
+        server_label="Notion",
+        server_description="Realizar acciones en Notion",
+        server_url="https://f2a65189bb2c.ngrok-free.app/mcp",
+        allowed_tools=["get_notion_page_content","create_page","search_a_page_in_notion","get_notion_page_content","append_text_block","append_title_block","append_code_block","update_block"]
+    )
+    
+    langchain_agent.add_mcp_tool(
+        server_label="GitHub",
+        server_description="Realizar acciones en GitHub",
+        server_url="https://api.githubcopilot.com/mcp/",
+        authorization=os.getenv('GITHUB_TOKEN'),
+        allowed_tools=["search_code", "search_repositories"]
+    )
+    
+    langchain_agent.add_mcp_tool(
+        server_label="GitHubFile",
+        server_description="Obtener contenido de archivos en GitHub",
+        server_url="https://f2a65189bb2c.ngrok-free.app/mcp",
+        allowed_tools=["get_github_file_content"]
+    )
+    
+    print("✅ Todos los servidores MCP configurados")
+    
 except Exception as e:
-    print(f"❌ Error inicializando adaptadores: {e}")
-    notion_adapter = None
-    openai_adapter = None
+    print(f"❌ Error inicializando agente: {e}")
+    langchain_agent = None
 
 # --- 2. Modelo de Datos de Entrada (con Pydantic) ---
 # Define la estructura del JSON que tu API espera recibir.
@@ -164,18 +182,15 @@ async def slack_messages_webhook(request: Request, background_tasks: BackgroundT
             success = save_to_dynamodb(TABLE, item_to_save)
             if success:
                 print("Mensaje de Slack guardado exitosamente en DynamoDB")
-                print("Análisis en background iniciado")
-                print("111111111111111111111111111111111111111111111111111111111111111")
-                background_tasks.add_task(background_analysis_task,message=slack_item["messageText"], openai_adapter=openai_adapter, table=TABLE)
+                print("🚀 Análisis con LangChain MCP en background iniciado")
+                background_tasks.add_task(background_analysis_task, message=slack_item["messageText"], openai_adapter=langchain_agent, table=TABLE)
                 return Response(content=json.dumps({"ok": True, "messageId": item_to_save["messageId"]}), media_type="application/json")
             else:
                 print("Error guardando mensaje en DynamoDB")
-                print("222222222222222222222222222222222222222222222222222222222222222222222222")
-                background_tasks.add_task(background_analysis_task,message=slack_item["messageText"], openai_adapter=openai_adapter, table=TABLE)
+                background_tasks.add_task(background_analysis_task, message=slack_item["messageText"], openai_adapter=langchain_agent, table=TABLE)
                 return Response(content=json.dumps({"ok": True, "error": "Error guardando en base de datos"}), media_type="application/json")
         else:
-            print('333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333')
-            background_tasks.add_task(background_analysis_task,message=slack_item["messageText"], openai_adapter=openai_adapter, table=TABLE)
+            background_tasks.add_task(background_analysis_task, message=slack_item["messageText"], openai_adapter=langchain_agent, table=TABLE)
             print("ADVERTENCIA: No se guardó el mensaje (conexión DynamoDB no disponible)")
             return Response(content=json.dumps({"ok": True, "error": "Base de datos no disponible"}), media_type="application/json")
 
@@ -191,25 +206,22 @@ async def slack_messages_webhook(request: Request, background_tasks: BackgroundT
 @app.post("/analyze")
 async def analyze_message(request: AnalyzeRequest, background_tasks: BackgroundTasks):
     """
-    Analiza un mensaje usando OpenAI con tools de Notion y GitHub.
+    Analiza un mensaje usando LangChain MCP con tools de Notion y GitHub.
     Retorna una respuesta inteligente con posibles acciones realizadas.
     """
     print(f"📨 ANALYZE: {request.message[:50]}...")
 
     try:
-        # Verificar que los adaptadores estén disponibles
-        if not openai_adapter:
-            print("❌ Adaptadores no disponibles")
+        # Verificar que el agente esté disponible
+        if not langchain_agent:
+            print("❌ Agente no disponible")
             return {
                 "response": "Lo siento, los servicios de IA no están disponibles en este momento.",
-                "error": "Adaptadores no inicializados",
+                "error": "Agente no inicializado",
                 "tool_results": []
             }
 
-
-
-
-        background_tasks.add_task(background_analysis_task,message=request.message, openai_adapter=openai_adapter, table=TABLE)
+        background_tasks.add_task(background_analysis_task, message=request.message, openai_adapter=langchain_agent, table=TABLE)
 
     except Exception as e:
         print(f"❌ Error en análisis: {e}")

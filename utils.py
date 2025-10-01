@@ -107,22 +107,30 @@ def background_analysis_task(message: str, openai_adapter, table):
     """Función que se ejecuta en segundo plano"""
     print("---------------------------------background_analysis_task---------------------------------")
 
-
     try:
-        # Verificar que los adaptadores estén disponibles
+        # Verificar que el adaptador/agente esté disponible
         if not openai_adapter:
-            print("❌ Adaptadores no disponibles")
+            print("❌ Adaptador/agente no disponible")
             return {
                 "response": "Lo siento, los servicios de IA no están disponibles en este momento.",
-                "error": "Adaptadores no inicializados",
+                "error": "Adaptador no inicializado",
                 "tool_results": []
             }
 
-        result = openai_adapter.chat(
-            message=message,
-        )
+        # Ejecutar el chat (maneja async si es LangChain, sync si es OpenAI v2)
+        import asyncio
+        import inspect
+        
+        # Verificar si el método chat es asíncrono
+        if inspect.iscoroutinefunction(openai_adapter.chat):
+            # Ejecutar de forma asíncrona (LangChain MCP Agent)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(openai_adapter.chat(message=message))
+            loop.close()
 
-        print("✅ Respuesta de OpenAI recibida")
+
+        print("✅ Respuesta del agente recibida")
         response_data = {
             "message": message,
             "response": result["response"],
