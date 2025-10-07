@@ -3,6 +3,7 @@ import uuid
 import boto3
 from typing import Optional, Dict, Any
 import json
+from datetime import datetime
 
 # Conexión a DynamoDB
 def get_dynamodb_connection() -> Optional[boto3.resource]:
@@ -53,7 +54,7 @@ def save_to_dynamodb(table: Any, item: Dict[str, Any]) -> bool:
         print(f"Error guardando en DynamoDB: {e}")
         return False
 
-def create_classification_item(message: str, classification_result: Dict[str, Any]) -> Dict[str, Any]:
+def create_classification_item(message: str, classification_result: Dict[str, Any], user_id: int, slack_channel_id: int, slack_channel_name: str) -> Dict[str, Any]:
     """
     Crea un item para guardar resultados de clasificación.
 
@@ -67,9 +68,13 @@ def create_classification_item(message: str, classification_result: Dict[str, An
     item_id = str(uuid.uuid4())
     return {
         'messageId': item_id,
+        'userId': user_id,
+        'slackChannelId': slack_channel_id,
+        'slackChannelName': slack_channel_name,
         'originalMessage': message,
         'classification': classification_result.get('classification'),
         'confidence': str(classification_result.get('confidence')),
+        'datetime': datetime.now().isoformat(),
     }
 
 def create_slack_message_item(slack_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -107,30 +112,22 @@ def background_analysis_task(message: str, openai_adapter, table):
     """Función que se ejecuta en segundo plano"""
     print("---------------------------------background_analysis_task---------------------------------")
 
+
     try:
-        # Verificar que el adaptador/agente esté disponible
+        # Verificar que los adaptadores estén disponibles
         if not openai_adapter:
-            print("❌ Adaptador/agente no disponible")
+            print("❌ Adaptadores no disponibles")
             return {
                 "response": "Lo siento, los servicios de IA no están disponibles en este momento.",
-                "error": "Adaptador no inicializado",
+                "error": "Adaptadores no inicializados",
                 "tool_results": []
             }
 
-        # Ejecutar el chat (maneja async si es LangChain, sync si es OpenAI v2)
-        import asyncio
-        import inspect
-        
-        # Verificar si el método chat es asíncrono
-        if inspect.iscoroutinefunction(openai_adapter.chat):
-            # Ejecutar de forma asíncrona (LangChain MCP Agent)
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(openai_adapter.chat(message=message))
-            loop.close()
+        result = openai_adapter.chat(
+            message=message,
+        )
 
-
-        print("✅ Respuesta del agente recibida")
+        print("✅ Respuesta de OpenAI recibida")
         response_data = {
             "message": message,
             "response": result["response"],

@@ -74,3 +74,9 @@ langchain-experimental
 langchain-huggingface
 langchain-mcp-adapters
 langsmith
+# Autenticación
+sqlalchemy
+python-jose[cryptography]
+bcrypt
+python-multipart
+pyjwt
