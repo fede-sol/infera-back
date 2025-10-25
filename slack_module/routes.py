@@ -6,7 +6,7 @@ from typing import List, Optional
 from auth.utils import get_current_user_token, get_current_user
 from database import get_db
 from slack_module.models import SlackChannel, NotionSlackAssociation
-from slack_module.utils import get_slack_channels, get_slack_channel_details
+from slack_module.utils import get_slack_channels, get_slack_channel_details, get_slack_user_info
 from notion_module.models import NotionDatabase
 from notion_module.utils import get_notion_database_details
 
@@ -540,4 +540,45 @@ def delete_association(
     return {
         "message": "Asociación eliminada exitosamente"
     }
+
+
+@router.get("/users/{slack_user_id}")
+async def get_slack_user(
+    slack_user_id: str,
+    current_user: dict = Depends(get_current_user_token),
+    db: Session = Depends(get_db)
+):
+    """
+    Obtiene información detallada del perfil de un usuario de Slack usando su ID.
+
+    Utiliza la API: GET https://slack.com/api/users.profile.get
+
+    Args:
+        slack_user_id: ID del usuario de Slack (ej: 'U1234567890')
+
+    Returns:
+        Información completa del perfil del usuario de Slack
+    """
+    # Obtener el usuario actual de la base de datos
+    from auth.models import User
+    user_id = int(current_user.get("sub"))
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado"
+        )
+
+    # Verificar que tenga token de Slack configurado
+    if not user.slack_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token de Slack no configurado. Configure su token de Slack primero."
+        )
+
+    # Obtener información del usuario de Slack
+    user_info = await get_slack_user_info(user.slack_token, slack_user_id)
+
+    return user_info
 

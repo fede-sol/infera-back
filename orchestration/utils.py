@@ -66,8 +66,8 @@ def initialize_openai_agent(user_id: str,db: Session) -> OpenAIAdapterV2:
         print("✅ Adaptador de OpenAI inicializado")
 
         # Configurar integraciones
-        openai_adapter.add_mcp_tool(server_label="Notion", server_description="Realizar acciones en Notion", server_url="https://infera.fastmcp.app/mcp", allowed_tools=["get_notion_page_content","create_page","search_a_page_in_notion","get_notion_page_content","append_text_block","append_title_block","append_code_block","update_block"], authorization=user_credentials["notion_token"])
-        openai_adapter.add_mcp_tool(server_label="GitHub", server_description="Realizar acciones en GitHub", server_url="https://api.githubcopilot.com/mcp/", allowed_tools=["search_code","search_repositories"], authorization=user_credentials["github_token"])
+        openai_adapter.add_mcp_tool(server_label="Notion", server_description="Realizar acciones en Notion", server_url="https://infera.fastmcp.app/mcp", allowed_tools=["get_notion_page_content","create_page","search_a_page_in_notion","get_notion_page_content","append_text_block","append_title_block","append_code_block","update_block","list_pages_in_notion","append_text_link_block","delete_block"], authorization=user_credentials["notion_token"])
+        openai_adapter.add_mcp_tool(server_label="GitHub", server_description="Realizar acciones en GitHub", server_url="https://api.githubcopilot.com/mcp/", allowed_tools=["search_code","search_repositories","list_commits","get_commit"], authorization=user_credentials["github_token"])
         openai_adapter.add_mcp_tool(server_label="Get_Github_File_Content", server_description="Obtener el contenido de un archivo en GitHub", server_url="https://infera.fastmcp.app/mcp", allowed_tools=["get_github_file_content"], authorization=user_credentials["github_token"])
         print("✅ Todas las herramientas configuradas")
 

@@ -108,7 +108,7 @@ def create_slack_message_item(slack_data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def background_analysis_task(message: str, openai_adapter, table):
+def background_analysis_task(message: str, user_profile: Dict[str, Any], openai_adapter, table):
     """Función que se ejecuta en segundo plano"""
     print("---------------------------------background_analysis_task---------------------------------")
 
@@ -122,9 +122,10 @@ def background_analysis_task(message: str, openai_adapter, table):
                 "error": "Adaptadores no inicializados",
                 "tool_results": []
             }
+        input = f'Perfil del usuario: {user_profile}\nMensaje: "{message}"'
 
         result = openai_adapter.chat(
-            message=message,
+            message=input,
         )
 
         print("✅ Respuesta de OpenAI recibida")

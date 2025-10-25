@@ -2,7 +2,7 @@ import json
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response, Depends
 from pydantic import BaseModel
 from utils import get_table, save_to_dynamodb, create_classification_item, create_slack_message_item, background_analysis_task
-from slack_module.utils import get_notion_databases_for_slack_channel
+from slack_module.utils import get_notion_databases_for_slack_channel, get_slack_message_link, get_slack_user_info
 import os
 from dotenv import load_dotenv
 from .utils import initialize_langchain_agent, initialize_openai_agent
@@ -118,7 +118,7 @@ async def slack_messages_webhook(request: Request, background_tasks: BackgroundT
 
         # 3. Verificar que sea un evento de mensaje
         event = data.get("event", {})
-        if event.get("type") != "message":
+        if event.get("type") != "message" or event.get("subtype") == "message_deleted":
             print(f"Tipo de evento interno no es mensaje: {event.get('type')}")
             return Response(content=json.dumps({"ok": True, "message": "Evento no es mensaje, ignorado"}), media_type="application/json")
 
@@ -137,7 +137,7 @@ async def slack_messages_webhook(request: Request, background_tasks: BackgroundT
         
         # 6. Verificar si el canal tiene asociaciones con Notion
         slack_channel_id = slack_item["channelId"]
-        print(user)
+
         notion_databases = get_notion_databases_for_slack_channel(
             slack_channel_id_external=slack_channel_id,
             user_id=user.id,
@@ -192,8 +192,15 @@ async def slack_messages_webhook(request: Request, background_tasks: BackgroundT
         else:
             print("ADVERTENCIA: No se guardó el mensaje (conexión DynamoDB no disponible)")
 
+        slack_user_info = await get_slack_user_info(user.slack_token, slack_item["userId"])
+        slack_message_link = await get_slack_message_link(user.slack_token, slack_item["channelId"], slack_item["timestamp"])
+        user_profile = {
+            "rol": slack_user_info['title'],
+            "nombre": slack_user_info['real_name'],
+            "enlace_mensaje": slack_message_link,
+        }
         print("🚀 Análisis con OpenAI en background iniciado")
-        background_tasks.add_task(background_analysis_task, message=slack_item["messageText"], openai_adapter=open_ai_agent, table=TABLE)
+        background_tasks.add_task(background_analysis_task, message=slack_item["messageText"], user_profile=user_profile, openai_adapter=open_ai_agent, table=TABLE)
         return Response()
     except json.JSONDecodeError as e:
         print(f"Error decodificando JSON: {e}")
