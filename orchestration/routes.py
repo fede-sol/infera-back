@@ -1,7 +1,7 @@
 import json
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response, Depends
 from pydantic import BaseModel
-from utils import get_table, save_to_dynamodb, create_classification_item, create_slack_message_item, background_analysis_task
+from utils import get_table, save_to_dynamodb, create_classification_item, create_slack_message_item, background_analysis_task, add_message_to_batch, get_batch_status, message_batches
 from slack_module.utils import get_notion_databases_for_slack_channel, get_slack_message_link, get_slack_user_info
 import os
 from dotenv import load_dotenv
@@ -163,7 +163,22 @@ async def slack_messages_webhook(request: Request, background_tasks: BackgroundT
             print(f"ℹ️ Canal {slack_channel_id} no tiene asociaciones con Notion")
             return Response(content=json.dumps({"ok": True, "error": "Canal no tiene asociaciones con Notion"}), media_type="application/json")
 
-        # 7. Clasificar el mensaje
+        # 7. Preparar datos para el batch
+        slack_user_info = await get_slack_user_info(user.slack_token, slack_item["userId"])
+        slack_message_link = await get_slack_message_link(user.slack_token, slack_item["channelId"], slack_item["timestamp"])
+        user_profile = {
+            "rol": slack_user_info['title'],
+            "nombre": slack_user_info['real_name'],
+            "enlace_mensaje": slack_message_link,
+        }
+
+        # 8. Inicializar agente de OpenAI
+        open_ai_agent = initialize_openai_agent(user.id, db)
+        if not open_ai_agent:
+            print("❌ Agente no disponible")
+            return Response(content=json.dumps({"ok": True, "error": "Agente no disponible"}), media_type="application/json")
+
+        # 9. Clasificar el mensaje para guardarlo en DynamoDB
         result = await classify_decision(slack_item["messageText"])
         item_to_save = create_classification_item(
             slack_item["messageText"],
@@ -173,35 +188,29 @@ async def slack_messages_webhook(request: Request, background_tasks: BackgroundT
             channel_name
         )
 
-        print(f"Mensaje de Slack: {slack_item['messageText']}")
-        print(f"Resultado de la clasificación: {result}")
-
-        # 8. Inicializar agente de OpenAI
-        open_ai_agent = initialize_openai_agent(user.id, db)
-        if not open_ai_agent:
-            print("❌ Agente no disponible")
-            return Response(content=json.dumps({"ok": True, "error": "Agente no disponible"}), media_type="application/json")
-
-        # 9. Guardar en DynamoDB
+        # 10. Guardar clasificación en DynamoDB (esto se mantiene inmediato)
         if TABLE:
             success = save_to_dynamodb(TABLE, item_to_save)
             if success:
-                print("Mensaje de Slack guardado exitosamente en DynamoDB")
+                print("✅ Mensaje de Slack guardado exitosamente en DynamoDB")
             else:
-                print("Error guardando mensaje en DynamoDB")
+                print("❌ Error guardando mensaje en DynamoDB")
         else:
-            print("ADVERTENCIA: No se guardó el mensaje (conexión DynamoDB no disponible)")
+            print("⚠️ ADVERTENCIA: No se guardó el mensaje (conexión DynamoDB no disponible)")
 
-        slack_user_info = await get_slack_user_info(user.slack_token, slack_item["userId"])
-        slack_message_link = await get_slack_message_link(user.slack_token, slack_item["channelId"], slack_item["timestamp"])
-        user_profile = {
-            "rol": slack_user_info['title'],
-            "nombre": slack_user_info['real_name'],
-            "enlace_mensaje": slack_message_link,
-        }
-        print("🚀 Análisis con OpenAI en background iniciado")
-        background_tasks.add_task(background_analysis_task, message=slack_item["messageText"], user_profile=user_profile, openai_adapter=open_ai_agent, table=TABLE)
-        return Response()
+        # 11. Agregar mensaje al sistema de batching para procesamiento posterior
+        print(f"📥 Agregando mensaje al batch del canal {slack_item['channelId']}")
+        add_message_to_batch(
+            channel_id=slack_item["channelId"],
+            slack_item=slack_item,
+            user_profile=user_profile,
+            openai_agent=open_ai_agent,
+            user_id=user.id,
+            db=db
+        )
+
+        print(f"⏳ Mensaje agregado al batch. Se procesará en {os.getenv('BATCH_TIMEOUT_SECONDS', '30')} segundos si no llegan más mensajes.")
+        return Response(content=json.dumps({"ok": True, "message": "Mensaje agregado al batch para procesamiento"}), media_type="application/json")
     except json.JSONDecodeError as e:
         print(f"Error decodificando JSON: {e}")
         return Response(content=json.dumps({"ok": True, "error": "JSON inválido"}), media_type="application/json", status_code=200)
@@ -244,4 +253,68 @@ async def analyze_message(request: AnalyzeRequest, background_tasks: BackgroundT
             "error": True,
             "tool_results": []
         }
+
+
+@router.get("/batch-status")
+async def get_batch_status_endpoint(channel_id: str = None):
+    """
+    Obtiene el estado de los batches de mensajes.
+    Si se especifica channel_id, muestra el estado de ese canal específico.
+    Si no, muestra el estado de todos los canales con batches activos.
+    """
+    try:
+        if channel_id:
+            # Estado de un canal específico
+            status = get_batch_status(channel_id)
+            return {
+                "channel_id": channel_id,
+                "batch_status": status
+            }
+        else:
+            # Estado de todos los canales
+            all_status = {}
+            for ch_id, batch in message_batches.items():
+                if batch is not None:
+                    all_status[ch_id] = get_batch_status(ch_id)
+
+            return {
+                "active_channels": len(all_status),
+                "batch_timeout_seconds": int(os.getenv('BATCH_TIMEOUT_SECONDS', '30')),
+                "channels": all_status
+            }
+
+    except Exception as e:
+        print(f"❌ Error obteniendo estado de batches: {e}")
+        raise HTTPException(status_code=500, detail="Error interno del servidor")
+
+
+@router.post("/force-process-batch")
+async def force_process_batch_endpoint(channel_id: str):
+    """
+    Fuerza el procesamiento inmediato del batch de un canal específico.
+    Útil para testing o cuando se necesita procesar inmediatamente.
+    """
+    try:
+        from utils import process_message_batch
+
+        print(f"🔧 Procesamiento forzado del batch del canal {channel_id}")
+
+        # Verificar si el canal tiene un batch
+        if channel_id not in message_batches or message_batches[channel_id] is None:
+            return {
+                "success": False,
+                "message": f"No hay batch activo para el canal {channel_id}"
+            }
+
+        # Procesar el batch inmediatamente
+        process_message_batch(channel_id)
+
+        return {
+            "success": True,
+            "message": f"Batch del canal {channel_id} procesado exitosamente"
+        }
+
+    except Exception as e:
+        print(f"❌ Error procesando batch forzado: {e}")
+        raise HTTPException(status_code=500, detail="Error procesando batch")
 

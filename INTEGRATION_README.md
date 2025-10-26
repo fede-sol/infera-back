@@ -497,3 +497,101 @@ Una vez que la aplicación esté corriendo, puedes acceder a la documentación i
 http://localhost:8000/docs
 ```
 
+## Sistema de Batching para Mensajes
+
+### Descripción
+
+El sistema de batching permite procesar múltiples mensajes de Slack de forma agrupada en lugar de procesarlos individualmente. Esto mejora la eficiencia y reduce la carga del servidor.
+
+### Configuración
+
+Configura la variable de entorno `BATCH_TIMEOUT_SECONDS` para definir el tiempo en segundos que se espera antes de procesar un batch:
+
+```bash
+# En tu archivo .env
+BATCH_TIMEOUT_SECONDS=30  # Espera 30 segundos antes de procesar
+```
+
+### Cómo Funciona
+
+1. **Recepción de Mensajes**: Cuando llega un mensaje de Slack, se agrega a un batch específico del canal
+2. **Timer de Espera**: Se inicia un timer con el timeout configurado
+3. **Procesamiento**: Si llega otro mensaje antes del timeout, se reinicia el timer. Cuando se cumple el timeout sin nuevos mensajes:
+   - Se procesa cada mensaje individualmente con el servicio NLP
+   - Se ejecuta el `background_analysis_task` para cada mensaje con su remitente y link
+   - Se limpia el batch del canal
+
+### Endpoints del Sistema de Batching
+
+#### Ver Estado de Batches
+
+```bash
+# Ver todos los batches activos
+GET /orchestration/batch-status
+
+# Ver estado de un canal específico
+GET /orchestration/batch-status?channel_id=C01ABC123
+```
+
+Respuesta:
+```json
+{
+  "active_channels": 2,
+  "batch_timeout_seconds": 30,
+  "channels": {
+    "C01ABC123": {
+      "status": "active",
+      "message_count": 3,
+      "created_at": "2025-01-01T10:00:00",
+      "timeout_seconds": 30,
+      "seconds_since_creation": 15
+    }
+  }
+}
+```
+
+#### Forzar Procesamiento de Batch
+
+```bash
+POST /orchestration/force-process-batch
+Content-Type: application/json
+
+{
+  "channel_id": "C01ABC123"
+}
+```
+
+Respuesta:
+```json
+{
+  "success": true,
+  "message": "Batch del canal C01ABC123 procesado exitosamente"
+}
+```
+
+### Ventajas del Sistema de Batching
+
+- ✅ **Mejor Rendimiento**: Reduce la cantidad de llamadas a servicios externos
+- ✅ **Contexto Completo**: Procesa mensajes relacionados que llegan en secuencia
+- ✅ **Configurable**: Ajusta el timeout según las necesidades del canal
+- ✅ **Monitoreo**: Endpoints para verificar el estado de los batches
+
+### Configuración por Canal
+
+Cada canal de Slack tiene su propio batch independiente. Esto permite:
+- Canales de alta actividad: timeout más corto
+- Canales de baja actividad: timeout más largo
+- Conversaciones relacionadas se procesan juntas
+
+### Logs del Sistema
+
+El sistema genera logs informativos para monitorear su funcionamiento:
+
+```
+📥 Mensaje agregado al batch del canal C01ABC123. Total mensajes en batch: 2
+⏳ Mensaje agregado al batch. Se procesará en 30 segundos si no llegan más mensajes.
+⏰ Procesando batch del canal C01ABC123
+🔄 Procesando mensaje: Hola equipo, ¿cómo están?...
+✅ Batch del canal C01ABC123 procesado completamente (2 mensajes)
+```
+

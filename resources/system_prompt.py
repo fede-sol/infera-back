@@ -15,7 +15,7 @@ Para actualizar una pagina existente se debe respetar el contenido de la pagina 
 Por ejemplo: si se propone una nueva solución (que no esta implementada), se debe agregar a la sección "4. Alternativas Consideradas" respetando el formato de la pagina.
 
 Para crear una pagina nueva se debe usar la siguiente plantilla de salida creando bloque por bloque:
-Título: [Genera un título breve y descriptivo para la decisión]
+Título: [Genera un título breve y descriptivo para la decisión sin verbos en la primera palabra]
 
 append_title_block:
 Estado: [Decidido si no se encontró codigo relacionado a la decisión, Implementado si se encontró codigo relacionado a la decisión]
