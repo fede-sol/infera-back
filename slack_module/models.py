@@ -1,97 +1,100 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Text
-from sqlalchemy.orm import relationship
-from datetime import datetime
-from auth.models import Base
+from sqlalchemy.orm import Session
+from auth.models import Resource, Integration, IntegrationType, ResourceType, ResourceAssociation
 
 
-class SlackChannel(Base):
+def get_slack_channels_for_user(db: Session, user_id: int):
     """
-    Modelo para guardar información de los channels de Slack
+    Helper para obtener todos los channels de Slack de un usuario.
+    Ahora usa el modelo Resource genérico.
     """
-    __tablename__ = "slack_channels"
+    return db.query(Resource).join(Integration).filter(
+        Resource.user_id == user_id,
+        Integration.integration_type == IntegrationType.SLACK,
+        Resource.resource_type == ResourceType.MESSAGING_CHANNEL,
+        Resource.is_active == True
+    ).all()
 
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    
-    # Información del channel de Slack
-    slack_channel_id = Column(String, nullable=False, index=True)
-    channel_name = Column(String, nullable=False)
-    is_private = Column(Boolean, default=False)
-    
-    # Metadata
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    # Relación con asociaciones
-    database_associations = relationship("NotionSlackAssociation", back_populates="slack_channel", cascade="all, delete-orphan")
 
-    def __repr__(self):
-        return f"<SlackChannel(id={self.id}, name={self.channel_name}, user_id={self.user_id})>"
-    
-    def to_dict(self):
-        """Convertir a diccionario"""
-        return {
-            "id": self.id,
-            "user_id": self.user_id,
-            "slack_channel_id": self.slack_channel_id,
-            "channel_name": self.channel_name,
-            "is_private": self.is_private,
-            "is_active": self.is_active,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+def get_slack_channel_by_external_id(db: Session, user_id: int, external_id: str):
+    """
+    Helper para obtener un channel específico por su ID externo.
+    """
+    return db.query(Resource).join(Integration).filter(
+        Resource.user_id == user_id,
+        Resource.external_id == external_id,
+        Integration.integration_type == IntegrationType.SLACK,
+        Resource.resource_type == ResourceType.MESSAGING_CHANNEL,
+        Resource.is_active == True
+    ).first()
+
+
+def create_slack_channel_resource(db: Session, user_id: int, channel_data: dict):
+    """
+    Helper para crear un recurso de tipo channel de Slack.
+    Busca o crea la integración de Slack para el usuario.
+    """
+    # Buscar integración de Slack del usuario
+    integration = db.query(Integration).filter(
+        Integration.user_id == user_id,
+        Integration.integration_type == IntegrationType.SLACK,
+        Integration.is_active == True
+    ).first()
+
+    if not integration:
+        raise ValueError("Usuario no tiene integración de Slack configurada")
+
+    # Crear el recurso
+    resource = Resource(
+        user_id=user_id,
+        integration_id=integration.id,
+        resource_type=ResourceType.MESSAGING_CHANNEL,
+        external_id=channel_data["slack_channel_id"],
+        name=channel_data["channel_name"],
+        resource_metadata={
+            "is_private": channel_data.get("is_private", False),
+            **channel_data.get("metadata", {})
         }
+    )
+
+    db.add(resource)
+    db.commit()
+    db.refresh(resource)
+    return resource
 
 
-class NotionSlackAssociation(Base):
+def create_resource_association(db: Session, source_resource_id: int, target_resource_id: int, config: dict = None):
     """
-    Modelo para asociar databases de Notion con channels de Slack.
-    Una database de Notion puede estar asociada a múltiples channels de Slack.
+    Helper para crear una asociación entre recursos.
     """
-    __tablename__ = "notion_slack_associations"
+    association = ResourceAssociation(
+        source_resource_id=source_resource_id,
+        target_resource_id=target_resource_id,
+        auto_sync=config.get("auto_sync", True) if config else True,
+        sync_direction=config.get("sync_direction", "source_to_target") if config else "source_to_target",
+        config=config.get("config", {}) if config else {},
+        notes=config.get("notes") if config else None
+    )
 
-    id = Column(Integer, primary_key=True, index=True)
-    
-    # Relaciones
-    notion_database_id = Column(Integer, ForeignKey("notion_databases.id"), nullable=False)
-    slack_channel_id = Column(Integer, ForeignKey("slack_channels.id"), nullable=False)
-    
-    # Configuración adicional (opcional)
-    auto_sync = Column(Boolean, default=True)
-    notes = Column(Text, nullable=True)
-    
-    # Metadata
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    # Relaciones inversas
-    notion_database = relationship("NotionDatabase", back_populates="channel_associations")
-    slack_channel = relationship("SlackChannel", back_populates="database_associations")
+    db.add(association)
+    db.commit()
+    db.refresh(association)
+    return association
 
-    def __repr__(self):
-        return f"<NotionSlackAssociation(id={self.id}, notion_db={self.notion_database_id}, slack_channel={self.slack_channel_id})>"
-    
-    def to_dict(self):
-        """Convertir a diccionario"""
-        return {
-            "id": self.id,
-            "notion_database_id": self.notion_database_id,
-            "slack_channel_id": self.slack_channel_id,
-            "auto_sync": self.auto_sync,
-            "notes": self.notes,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-        }
-    
-    def to_dict_with_details(self):
-        """Convertir a diccionario con detalles de las relaciones"""
-        return {
-            "id": self.id,
-            "notion_database": self.notion_database.to_dict() if self.notion_database else None,
-            "slack_channel": self.slack_channel.to_dict() if self.slack_channel else None,
-            "auto_sync": self.auto_sync,
-            "notes": self.notes,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-        }
+
+def get_resource_associations_for_user(db: Session, user_id: int, source_resource_id: int = None, target_resource_id: int = None):
+    """
+    Helper para obtener asociaciones de recursos de un usuario.
+    Puede filtrar por recurso fuente o destino.
+    """
+    query = db.query(ResourceAssociation).join(
+        Resource, ResourceAssociation.source_resource_id == Resource.id
+    ).filter(Resource.user_id == user_id)
+
+    if source_resource_id:
+        query = query.filter(ResourceAssociation.source_resource_id == source_resource_id)
+
+    if target_resource_id:
+        query = query.filter(ResourceAssociation.target_resource_id == target_resource_id)
+
+    return query.filter(ResourceAssociation.is_active == True).all()
 

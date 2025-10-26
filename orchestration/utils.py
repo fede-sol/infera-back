@@ -8,7 +8,7 @@ from adapters.openai_adapter_v2 import OpenAIAdapterV2
 
 load_dotenv()
 
-def initialize_langchain_agent(user_id: str, db: Session) -> LangChainMCPAgent:
+def initialize_langchain_agent(user_id: int, db: Session) -> LangChainMCPAgent:
 # --- Inicialización de Agente LangChain con MCP ---
     print("🚀 Iniciando agente LangChain MCP...")
     user_credentials = get_user_credentials(user_id,db)
@@ -56,7 +56,7 @@ def initialize_langchain_agent(user_id: str, db: Session) -> LangChainMCPAgent:
         print(f"❌ Error inicializando agente: {e}")
         langchain_agent = None
 
-def initialize_openai_agent(user_id: str,db: Session) -> OpenAIAdapterV2:
+def initialize_openai_agent(user_id: int, db: Session) -> OpenAIAdapterV2:
     # --- Inicialización de Adaptadores ---
     print("🚀 Iniciando OpenAI Adapter...")
     user_credentials = get_user_credentials(user_id,db)

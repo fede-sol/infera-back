@@ -174,23 +174,69 @@ def require_admin(current_user = Depends(get_current_user)):
         )
     return current_user
 
-def get_user_credentials(user_id: str,db: Session):
+def get_user_credentials(user_id: int, db: Session):
     """
-    Obtiene las credenciales del usuario
+    Obtiene las credenciales del usuario desde campos legacy y nuevas integraciones
     """
-    from auth.models import User
+    from auth.models import User, Integration, IntegrationType
+
+    # Obtener el usuario
     user = db.query(User).filter(User.id == user_id).first()
-    return {
+    if not user:
+        return {
+            "github_token": None,
+            "slack_token": None,
+            "notion_token": None,
+            "openai_api_key": None
+        }
+
+    # Primero intentar campos legacy
+    credentials = {
         "github_token": user.github_token,
         "slack_token": user.slack_token,
         "notion_token": user.notion_token,
         "openai_api_key": user.openai_api_key
     }
 
-def get_user_by_slack_team_id(slack_team_id: str,db: Session) -> User:
+    # Si algún campo legacy está vacío, buscar en integraciones
+    if not all(credentials.values()):
+        integrations = db.query(Integration).filter(
+            Integration.user_id == user_id,
+            Integration.is_active == True
+        ).all()
+
+        for integration in integrations:
+            service_name = integration.integration_type.value
+            token_key = f"{service_name}_token"
+            if service_name == "openai":
+                token_key = "openai_api_key"
+
+            # Solo actualizar si el campo legacy está vacío
+            if not credentials.get(token_key):
+                credentials[token_key] = integration.access_token
+
+    return credentials
+
+def get_user_by_slack_team_id(slack_team_id: str, db: Session) -> User:
     """
-    Obtiene el usuario por el team_id de Slack
+    Obtiene el usuario por el team_id de Slack desde campos legacy y nuevas integraciones
     """
-    from auth.models import User
+    from auth.models import User, Integration, IntegrationType
+
+    # Primero buscar en campos legacy del User
     user = db.query(User).filter(User.slack_team_id == slack_team_id).first()
-    return user
+    if user:
+        return user
+
+    # Si no se encuentra, buscar en integraciones
+    integrations = db.query(Integration).filter(
+        Integration.integration_type == IntegrationType.SLACK,
+        Integration.is_active == True
+    ).all()
+
+    for integration in integrations:
+        metadata = integration.integration_metadata or {}
+        if metadata.get("team_id") == slack_team_id:
+            return integration.user
+
+    return None

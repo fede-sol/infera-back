@@ -58,28 +58,38 @@ def save_to_dynamodb(table: Any, item: Dict[str, Any]) -> bool:
         print(f"Error guardando en DynamoDB: {e}")
         return False
 
-def create_classification_item(message: str, classification_result: Dict[str, Any], user_id: int, slack_channel_id: int, slack_channel_name: str) -> Dict[str, Any]:
+def create_classification_item(message: str, classification_result: Dict[str, Any], user_id: int = None, slack_channel_id: str = None, slack_channel_name: str = None) -> Dict[str, Any]:
     """
     Crea un item para guardar resultados de clasificación.
 
     Args:
         message: Mensaje original
         classification_result: Resultado de la clasificación
+        user_id: ID del usuario (opcional)
+        slack_channel_id: ID del canal de Slack (opcional)
+        slack_channel_name: Nombre del canal de Slack (opcional)
 
     Returns:
         Dict con el item formateado para DynamoDB
     """
     item_id = str(uuid.uuid4())
-    return {
+    item = {
         'messageId': item_id,
-        'userId': user_id,
-        'slackChannelId': slack_channel_id,
-        'slackChannelName': slack_channel_name,
         'originalMessage': message,
         'classification': classification_result.get('classification'),
         'confidence': str(classification_result.get('confidence')),
         'datetime': datetime.now().isoformat(),
     }
+
+    # Agregar campos opcionales solo si están presentes
+    if user_id is not None:
+        item['userId'] = user_id
+    if slack_channel_id is not None:
+        item['slackChannelId'] = slack_channel_id
+    if slack_channel_name is not None:
+        item['slackChannelName'] = slack_channel_name
+
+    return item
 
 def create_slack_message_item(slack_data: Dict[str, Any]) -> Dict[str, Any]:
     """

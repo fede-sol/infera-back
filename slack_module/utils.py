@@ -276,68 +276,64 @@ def get_notion_databases_for_slack_channel(
 ) -> List[Dict]:
     """
     Obtiene las databases de Notion asociadas a un canal de Slack específico.
-    
+
     Args:
         slack_channel_id_external: ID externo del canal de Slack (ej. "C123456")
         user_id: ID del usuario propietario
         db: Sesión de base de datos
-        
+
     Returns:
         Lista de databases de Notion asociadas con sus detalles.
         Retorna lista vacía si el canal no tiene asociaciones.
     """
-    from slack_module.models import SlackChannel, NotionSlackAssociation
-    from notion_module.models import NotionDatabase
+    from auth.models import Resource, ResourceAssociation, Integration, IntegrationType, ResourceType
 
     # 1. Buscar el canal en la base de datos local
-    slack_channel = db.query(SlackChannel).filter(
-        SlackChannel.slack_channel_id == slack_channel_id_external,
-        SlackChannel.user_id == user_id,
-        SlackChannel.is_active == True
+    slack_channel = db.query(Resource).join(Integration).filter(
+        Resource.external_id == slack_channel_id_external,
+        Resource.user_id == user_id,
+        Integration.integration_type == IntegrationType.SLACK,
+        Resource.resource_type == ResourceType.MESSAGING_CHANNEL,
+        Resource.is_active == True
     ).first()
-    
+
     if not slack_channel:
         print(f"⚠️ Canal de Slack {slack_channel_id_external} no encontrado en la base de datos local")
         return []
 
     print(f"Canal de Slack encontrado: {slack_channel}")
 
-    associationsNotion = db.query(NotionSlackAssociation).all()
-    print(f"ID externo del canal: {associationsNotion}")
-    
-    # 2. Buscar todas las asociaciones activas de este canal
-    associations = db.query(NotionSlackAssociation).filter(
-        NotionSlackAssociation.slack_channel_id == slack_channel.id
+    # 2. Buscar todas las asociaciones activas donde este canal es fuente
+    associations = db.query(ResourceAssociation).filter(
+        ResourceAssociation.source_resource_id == slack_channel.id,
+        ResourceAssociation.is_active == True
     ).all()
 
     print(f"Asociaciones encontradas: {len(associations)}")
-    
+
     if not associations:
-        print(f"⚠️ Canal {slack_channel.channel_name} no tiene asociaciones con Notion")
+        print(f"⚠️ Canal {slack_channel.name} no tiene asociaciones con Notion")
         return []
-    
+
     # 3. Obtener las databases de Notion asociadas
     notion_databases = []
     for association in associations:
-        notion_db = db.query(NotionDatabase).filter(
-            NotionDatabase.id == association.notion_database_id,
-            NotionDatabase.is_active == True
-        ).first()
-        
-        if notion_db:
+        notion_db = association.target_resource
+
+        if notion_db and notion_db.is_active:
             notion_databases.append({
                 "association_id": association.id,
                 "notion_database_id": notion_db.id,
-                "notion_database_id_external": notion_db.notion_database_id,
-                "database_name": notion_db.database_name,
-                "database_url": notion_db.database_url,
+                "notion_database_id_external": notion_db.external_id,
+                "database_name": notion_db.name,
+                "database_url": notion_db.url,
                 "auto_sync": association.auto_sync,
                 "notes": association.notes
             })
-    
+
     if notion_databases:
-        print(f"✅ Canal {slack_channel.channel_name} tiene {len(notion_databases)} database(s) de Notion asociada(s)")
-    
+        print(f"✅ Canal {slack_channel.name} tiene {len(notion_databases)} database(s) de Notion asociada(s)")
+
     return notion_databases
 
 

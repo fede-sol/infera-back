@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from auth.models import Base
+from auth.models import Base, migrate_legacy_credentials
 import os
 
 
@@ -18,9 +18,20 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 def init_db():
-    """Inicializa la base de datos creando todas las tablas"""
+    """Inicializa la base de datos creando todas las tablas y migrando datos legacy"""
     print("🗄️  Inicializando base de datos...")
     Base.metadata.create_all(bind=engine)
+    print("✅ Tablas creadas")
+
+    # Migrar datos legacy
+    db = SessionLocal()
+    try:
+        migrate_legacy_credentials(db)
+    except Exception as e:
+        print(f"⚠️  Error en migración: {e}")
+    finally:
+        db.close()
+
     print("✅ Base de datos inicializada")
 
 

@@ -1,6 +1,6 @@
 from typing import Dict, Any, List
 from sqlalchemy.orm import Session
-from slack_module.models import SlackChannel
+from auth.models import Integration, IntegrationType
 import boto3
 from boto3.dynamodb.conditions import Key, Attr
 from datetime import datetime
@@ -10,20 +10,23 @@ import os
 def get_user_messages_count(user_id: int, db: Session) -> int:
     """
     Cuenta el total de mensajes procesados para un usuario.
-    
+
     Args:
         user_id: ID del usuario
         db: Sesión de base de datos
-    
+
     Returns:
         int: Total de mensajes procesados
     """
     try:
-        # Obtener el team_id de Slack del usuario
-        from auth.models import User
-        user = db.query(User).filter(User.id == user_id).first()
-        
-        if not user or not user.slack_team_id:
+        # Obtener la integración de Slack del usuario
+        slack_integration = db.query(Integration).filter(
+            Integration.user_id == user_id,
+            Integration.integration_type == IntegrationType.SLACK,
+            Integration.is_active == True
+        ).first()
+
+        if not slack_integration or not slack_integration.integration_metadata.get('team_id'):
             return 0
         
         # Conectar a DynamoDB
@@ -31,17 +34,17 @@ def get_user_messages_count(user_id: int, db: Session) -> int:
         table_name = os.environ.get('TABLE_NAME', 'classification_results')
         table = dynamodb.Table(table_name)
         
-        # Escanear la tabla buscando mensajes del team_id del usuario
+        # Escanear la tabla buscando mensajes del usuario
         response = table.scan(
-            FilterExpression=Attr('userId').eq(user.id)
+            FilterExpression=Attr('userId').eq(user_id)
         )
-        
+
         count = len(response.get('Items', []))
-        
+
         # Manejar paginación si hay muchos resultados
         while 'LastEvaluatedKey' in response:
             response = table.scan(
-                FilterExpression=Attr('userId').eq(user.id),
+                FilterExpression=Attr('userId').eq(user_id),
                 ExclusiveStartKey=response['LastEvaluatedKey']
             )
             count += len(response.get('Items', []))
@@ -56,29 +59,32 @@ def get_user_messages_count(user_id: int, db: Session) -> int:
 def get_user_decisions_count(user_id: int, db: Session) -> int:
     """
     Cuenta el total de decisiones detectadas para un usuario.
-    
+
     Args:
         user_id: ID del usuario
         db: Sesión de base de datos
-    
+
     Returns:
         int: Total de decisiones detectadas
     """
     try:
-        # Obtener el team_id de Slack del usuario
-        from auth.models import User
-        user = db.query(User).filter(User.id == user_id).first()
+        # Obtener la integración de Slack del usuario
+        slack_integration = db.query(Integration).filter(
+            Integration.user_id == user_id,
+            Integration.integration_type == IntegrationType.SLACK,
+            Integration.is_active == True
+        ).first()
 
-        if not user or not user.slack_team_id:
+        if not slack_integration:
             return 0
 
         # Conectar a DynamoDB
         dynamodb = boto3.resource('dynamodb')
         table = dynamodb.Table('classification_results')
 
-        # Escanear la tabla buscando decisiones del team_id del usuario
+        # Escanear la tabla buscando decisiones del usuario
         response = table.scan(
-            FilterExpression=Attr('userId').eq(user.id) & Attr('classification').eq('DECISION')
+            FilterExpression=Attr('userId').eq(user_id) & Attr('classification').eq('DECISION')
         )
 
         count = len(response.get('Items', []))
@@ -86,7 +92,7 @@ def get_user_decisions_count(user_id: int, db: Session) -> int:
         # Manejar paginación si hay muchos resultados
         while 'LastEvaluatedKey' in response:
             response = table.scan(
-                FilterExpression=Attr('teamId').eq(user.slack_team_id) & Attr('classification').eq('DECISION'),
+                FilterExpression=Attr('userId').eq(user_id) & Attr('classification').eq('DECISION'),
                 ExclusiveStartKey=response['LastEvaluatedKey']
             )
             count += len(response.get('Items', []))
@@ -102,28 +108,30 @@ def get_user_slack_channels_count(user_id: int, db: Session) -> int:
     """
     Cuenta el total de canales de Slack analizados por un usuario.
     Solo cuenta canales que están siendo usados en asociaciones con Notion.
-    
+
     Args:
         user_id: ID del usuario
         db: Sesión de base de datos
-    
+
     Returns:
         int: Total de canales de Slack con asociaciones activas
     """
     try:
-        from slack_module.models import NotionSlackAssociation
-        
-        # Contar canales únicos que tienen asociaciones activas
-        count = db.query(SlackChannel).join(
-            NotionSlackAssociation,
-            SlackChannel.id == NotionSlackAssociation.slack_channel_id
+        from auth.models import Resource, ResourceAssociation, ResourceType
+
+        # Contar recursos únicos de tipo MESSAGING_CHANNEL que tienen asociaciones activas
+        count = db.query(Resource).join(
+            ResourceAssociation,
+            Resource.id == ResourceAssociation.source_resource_id
         ).filter(
-            SlackChannel.user_id == user_id,
-            SlackChannel.is_active == True
+            Resource.user_id == user_id,
+            Resource.resource_type == ResourceType.MESSAGING_CHANNEL,
+            Resource.is_active == True,
+            ResourceAssociation.is_active == True
         ).distinct().count()
-        
+
         return count
-        
+
     except Exception as e:
         print(f"Error contando canales: {e}")
         return 0

@@ -152,20 +152,31 @@ async def slack_messages_webhook(request: Request, background_tasks: BackgroundT
                 print(f"   - Database: {notion_db['database_name']} (ID: {notion_db['notion_database_id_external']})")
                 print(f"     Auto-sync: {notion_db['auto_sync']}")
             # Obtener el nombre del canal desde la base de datos
-            from slack_module.models import SlackChannel
-            slack_channel_obj = db.query(SlackChannel).filter(
-                SlackChannel.slack_channel_id == slack_channel_id,
-                SlackChannel.user_id == user.id
+            from auth.models import Resource, Integration, IntegrationType, ResourceType
+            slack_channel_obj = db.query(Resource).join(Integration).filter(
+                Resource.external_id == slack_channel_id,
+                Resource.user_id == user.id,
+                Integration.integration_type == IntegrationType.SLACK,
+                Resource.resource_type == ResourceType.MESSAGING_CHANNEL,
+                Resource.is_active == True
             ).first()
             if slack_channel_obj:
-                channel_name = slack_channel_obj.channel_name
+                channel_name = slack_channel_obj.name
         else:
             print(f"ℹ️ Canal {slack_channel_id} no tiene asociaciones con Notion")
             return Response(content=json.dumps({"ok": True, "error": "Canal no tiene asociaciones con Notion"}), media_type="application/json")
 
         # 7. Preparar datos para el batch
-        slack_user_info = await get_slack_user_info(user.slack_token, slack_item["userId"])
-        slack_message_link = await get_slack_message_link(user.slack_token, slack_item["channelId"], slack_item["timestamp"])
+        # Obtener token de Slack
+        from auth.routes import get_integration_token
+        slack_token = get_integration_token(user.id, "slack", db)
+
+        if not slack_token:
+            print("❌ No se pudo obtener token de Slack")
+            return Response(content=json.dumps({"ok": False, "error": "Token de Slack no encontrado"}), media_type="application/json")
+
+        slack_user_info = await get_slack_user_info(slack_token, slack_item["userId"])
+        slack_message_link = await get_slack_message_link(slack_token, slack_item["channelId"], slack_item["timestamp"])
         user_profile = {
             "rol": slack_user_info['title'],
             "nombre": slack_user_info['real_name'],

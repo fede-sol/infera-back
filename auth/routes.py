@@ -6,7 +6,8 @@ import httpx
 import os
 from dotenv import load_dotenv
 from fastapi.responses import RedirectResponse
-from auth.models import User
+from datetime import datetime
+from auth.models import User, Integration, IntegrationType
 from auth.utils import (
     verify_password,
     get_password_hash,
@@ -22,6 +23,42 @@ from database import get_db
 load_dotenv()
 
 router = APIRouter(prefix="/auth", tags=["Autenticación"])
+
+
+def get_credentials_for_user(user_id: int, db: Session) -> dict:
+    """Helper para obtener credenciales de un usuario"""
+    integrations = db.query(Integration).filter(
+        Integration.user_id == user_id,
+        Integration.is_active == True
+    ).all()
+
+    credentials = {}
+    for integration in integrations:
+        service_name = integration.integration_type.value
+        credentials[f"has_{service_name}_token"] = bool(integration.access_token)
+
+    return {
+        "has_github_token": credentials.get("has_github_token", False),
+        "has_slack_token": credentials.get("has_slack_token", False),
+        "has_notion_token": credentials.get("has_notion_token", False),
+        "has_openai_key": credentials.get("has_openai_key", False),
+    }
+
+
+def get_integration_token(user_id: int, integration_type: str, db: Session) -> Optional[str]:
+    """Helper para obtener el token de acceso de una integración específica"""
+    try:
+        int_type = IntegrationType(integration_type)
+    except ValueError:
+        return None
+
+    integration = db.query(Integration).filter(
+        Integration.user_id == user_id,
+        Integration.integration_type == int_type,
+        Integration.is_active == True
+    ).first()
+
+    return integration.access_token if integration else None
 
 
 # --- Schemas de Pydantic ---
@@ -102,10 +139,13 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
     
     print(f"✅ Usuario registrado: {new_user.username} (Admin: {is_first_user})")
     
+    user_dict = new_user.to_dict()
+    user_dict.update(get_credentials_for_user(new_user.id, db))
+
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "user": new_user.to_dict()
+        "user": user_dict
     }
 
 
@@ -136,11 +176,14 @@ def login(credentials: UserLogin, db: Session = Depends(get_db)):
     )
     
     print(f"✅ Login exitoso: {user.username}")
-    
+
+    user_dict = user.to_dict()
+    user_dict.update(get_credentials_for_user(user.id, db))
+
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "user": user.to_dict()
+        "user": user_dict
     }
 
 
@@ -153,7 +196,9 @@ def get_me(
     Obtiene información del usuario actual
     """
     current_user = get_current_user(payload, db)
-    return current_user.to_dict()
+    user_dict = current_user.to_dict()
+    user_dict.update(get_credentials_for_user(current_user.id, db))
+    return user_dict
 
 
 @router.put("/me")
@@ -202,30 +247,59 @@ def update_credentials(
     Actualiza las credenciales de integraciones del usuario
     """
     current_user = get_current_user(payload, db)
-    
-    # Actualizar credenciales (solo las que se envíen)
-    if creds.github_token is not None:
-        current_user.github_token = creds.github_token
-        print(f"✅ GitHub token actualizado para: {current_user.username}")
-    
-    if creds.slack_token is not None:
-        current_user.slack_token = creds.slack_token
-        print(f"✅ Slack token actualizado para: {current_user.username}")
-    
-    if creds.notion_token is not None:
-        current_user.notion_token = creds.notion_token
-        print(f"✅ Notion token actualizado para: {current_user.username}")
-    
-    if creds.openai_api_key is not None:
-        current_user.openai_api_key = creds.openai_api_key
-        print(f"✅ OpenAI API key actualizada para: {current_user.username}")
-    
+
+    # Mapear campos antiguos a nuevas integraciones
+    integration_mappings = {
+        'github_token': ('github', IntegrationType.GITHUB),
+        'slack_token': ('slack', IntegrationType.SLACK),
+        'notion_token': ('notion', IntegrationType.NOTION),
+        'openai_api_key': ('openai', IntegrationType.OPENAI)
+    }
+
+    updated_integrations = []
+
+    for field_name, (service_name, integration_type) in integration_mappings.items():
+        token_value = getattr(creds, field_name)
+        if token_value is not None:
+            # Actualizar campo legacy del User
+            setattr(current_user, field_name, token_value)
+
+            # Buscar o crear integración
+            integration = db.query(Integration).filter(
+                Integration.user_id == current_user.id,
+                Integration.integration_type == integration_type
+            ).first()
+
+            if integration:
+                # Actualizar integración existente
+                integration.access_token = token_value
+                integration.is_active = True
+                integration.last_synced_at = datetime.utcnow()
+            else:
+                # Crear nueva integración
+                integration = Integration(
+                    user_id=current_user.id,
+                    integration_type=integration_type,
+                    access_token=token_value,
+                    integration_metadata={}
+                )
+                db.add(integration)
+
+            updated_integrations.append(integration)
+            print(f"✅ {service_name.title()} token actualizado para: {current_user.username}")
+
     db.commit()
-    db.refresh(current_user)
-    
+
+    # Refrescar todas las integraciones actualizadas
+    for integration in updated_integrations:
+        db.refresh(integration)
+
+    user_dict = current_user.to_dict()
+    user_dict.update(get_credentials_for_user(current_user.id, db))
+
     return {
         "message": "Credenciales actualizadas exitosamente",
-        "user": current_user.to_dict()
+        "user": user_dict
     }
 
 
@@ -238,13 +312,28 @@ def get_credentials(
     Obtiene las credenciales del usuario (solo muestra si existen, no los valores)
     """
     current_user = get_current_user(payload, db)
-    
-    return {
-        "has_github_token": bool(current_user.github_token),
-        "has_slack_token": bool(current_user.slack_token),
-        "has_notion_token": bool(current_user.notion_token),
-        "has_openai_key": bool(current_user.openai_api_key),
-    }
+
+    # Obtener todas las integraciones activas del usuario
+    integrations = db.query(Integration).filter(
+        Integration.user_id == current_user.id,
+        Integration.is_active == True
+    ).all()
+
+    # Mapear integraciones a formato antiguo
+    credentials = {}
+    for integration in integrations:
+        service_name = integration.integration_type.value
+        credentials[f"has_{service_name}_token"] = bool(integration.access_token)
+
+    # Mantener compatibilidad con campos antiguos
+    credentials.update({
+        "has_github_token": credentials.get("has_github_token", False),
+        "has_slack_token": credentials.get("has_slack_token", False),
+        "has_notion_token": credentials.get("has_notion_token", False),
+        "has_openai_key": credentials.get("has_openai_key", False),
+    })
+
+    return credentials
 
 
 @router.delete("/credentials/{service}")
@@ -257,29 +346,49 @@ def delete_credential(
     Elimina una credencial específica
     """
     current_user = get_current_user(payload, db)
-    
+
+    # Mapear servicios a tipos de integración
     service_map = {
-        "github": "github_token",
-        "slack": "slack_token",
-        "notion": "notion_token",
-        "openai": "openai_api_key"
+        "github": IntegrationType.GITHUB,
+        "slack": IntegrationType.SLACK,
+        "notion": IntegrationType.NOTION,
+        "openai": IntegrationType.OPENAI
     }
-    
+
     if service not in service_map:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Servicio inválido. Opciones: {', '.join(service_map.keys())}"
         )
-    
-    # Eliminar credencial
-    setattr(current_user, service_map[service], None)
+
+    # Limpiar campo legacy del User
+    field_name = {
+        "github": "github_token",
+        "slack": "slack_token",
+        "notion": "notion_token",
+        "openai": "openai_api_key"
+    }[service]
+
+    setattr(current_user, field_name, None)
+    if service == "slack":
+        current_user.slack_team_id = None
+
+    # Buscar y desactivar la integración
+    integration = db.query(Integration).filter(
+        Integration.user_id == current_user.id,
+        Integration.integration_type == service_map[service]
+    ).first()
+
+    if integration:
+        integration.is_active = False
+
     db.commit()
-    
     print(f"✅ Credencial {service} eliminada para: {current_user.username}")
-    
+
     return {
         "message": f"Credencial de {service} eliminada exitosamente"
     }
+
 
 @router.get("/slack/oauth")
 async def slack_oauth(
@@ -354,15 +463,49 @@ async def slack_oauth(
             detail=f"Error de Slack: {error_msg}"
         )
     
-    # Guardar el token y team_id en la base de datos
-    print(slack_data)
-    user.slack_token = slack_data.get("authed_user", {}).get("access_token")
-    user.slack_team_id = slack_data.get("team", {}).get("id")
-    
+    # Crear o actualizar la integración de Slack
+    access_token = slack_data.get("authed_user", {}).get("access_token")
+    team_id = slack_data.get("team", {}).get("id")
+    team_name = slack_data.get("team", {}).get("name", "")
+
+    # Actualizar campos legacy del User
+    user.slack_token = access_token
+    user.slack_team_id = team_id
+
+    # Buscar integración existente
+    integration = db.query(Integration).filter(
+        Integration.user_id == user.id,
+        Integration.integration_type == IntegrationType.SLACK
+    ).first()
+
+    if integration:
+        # Actualizar integración existente
+        integration.access_token = access_token
+        integration.is_active = True
+        integration.integration_metadata = {
+            **integration.integration_metadata,
+            "team_id": team_id,
+            "team_name": team_name
+        }
+        print(f"✅ Integración de Slack actualizada para usuario: {user.username} (Team: {team_name})")
+    else:
+        # Crear nueva integración
+        integration = Integration(
+            user_id=user.id,
+            integration_type=IntegrationType.SLACK,
+            access_token=access_token,
+            integration_metadata={
+                "team_id": team_id,
+                "team_name": team_name
+            }
+        )
+        db.add(integration)
+        print(f"✅ Integración de Slack creada para usuario: {user.username} (Team: {team_name})")
+
     db.commit()
-    db.refresh(user)
-    
-    print(f"✅ Token de Slack configurado para usuario: {user.username} (Team: {user.slack_team_id})")
-    
+    db.refresh(integration)
+
     return RedirectResponse(url=f"{os.getenv('FRONTEND_URL')}/integrations")
+
+
 

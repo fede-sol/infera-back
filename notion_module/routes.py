@@ -4,8 +4,9 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 from auth.utils import get_current_user_token, get_current_user
+from auth.models import Integration, IntegrationType
 from database import get_db
-from notion_module.models import NotionDatabase
+from notion_module.models import get_notion_databases_for_user, get_notion_database_by_external_id, create_notion_database_resource
 from notion_module.utils import get_notion_databases, get_notion_database_details
 
 router = APIRouter(prefix="/notion", tags=["Notion"])
@@ -22,12 +23,15 @@ class NotionDatabaseCreate(BaseModel):
 class NotionDatabaseResponse(BaseModel):
     id: int
     user_id: int
-    notion_database_id: str
-    database_name: str
-    database_url: Optional[str]
+    integration_id: int
+    resource_type: str
+    external_id: str
+    name: str
+    description: Optional[str]
+    url: Optional[str]
+    metadata: dict
     is_active: bool
     created_at: str
-    updated_at: str
 
     class Config:
         from_attributes = True
@@ -45,15 +49,23 @@ async def list_notion_databases(
     No las guarda en la base de datos, solo las consulta.
     """
     current_user = get_current_user(payload, db)
-    
-    if not current_user.notion_token:
+
+    # Verificar que tenga token de Notion
+    from auth.routes import get_credentials_for_user
+    credentials = get_credentials_for_user(current_user.id, db)
+
+    if not credentials.get("has_notion_token"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Token de Notion no configurado. Configure su token en /auth/credentials"
         )
-    
-    databases = await get_notion_databases(current_user.notion_token)
-    
+
+    # Obtener el token real
+    from auth.routes import get_integration_token
+    token = get_integration_token(current_user.id, "notion", db)
+
+    databases = await get_notion_databases(token)
+
     return {
         "count": len(databases),
         "databases": databases
@@ -70,15 +82,23 @@ async def get_database_details(
     Obtiene los detalles de una database específica de Notion.
     """
     current_user = get_current_user(payload, db)
-    
-    if not current_user.notion_token:
+
+    # Verificar que tenga token de Notion
+    from auth.routes import get_credentials_for_user
+    credentials = get_credentials_for_user(current_user.id, db)
+
+    if not credentials.get("has_notion_token"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Token de Notion no configurado"
         )
-    
-    database = await get_notion_database_details(current_user.notion_token, database_id)
-    
+
+    # Obtener el token real
+    from auth.routes import get_integration_token
+    token = get_integration_token(current_user.id, "notion", db)
+
+    database = await get_notion_database_details(token, database_id)
+
     return database
 
 
@@ -91,12 +111,9 @@ def list_saved_databases(
     Lista todas las databases de Notion guardadas en la base de datos del usuario.
     """
     current_user = get_current_user(payload, db)
-    
-    databases = db.query(NotionDatabase).filter(
-        NotionDatabase.user_id == current_user.id,
-        NotionDatabase.is_active == True
-    ).all()
-    
+
+    databases = get_notion_databases_for_user(db, current_user.id)
+
     return databases
 
 
@@ -110,34 +127,32 @@ def save_notion_database(
     Guarda una database de Notion en la base de datos local para poder asociarla con channels de Slack.
     """
     current_user = get_current_user(payload, db)
-    
+
     # Verificar si ya existe
-    existing = db.query(NotionDatabase).filter(
-        NotionDatabase.user_id == current_user.id,
-        NotionDatabase.notion_database_id == database.notion_database_id
-    ).first()
-    
+    existing = get_notion_database_by_external_id(db, current_user.id, database.notion_database_id)
+
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Esta database ya está guardada"
         )
-    
-    # Crear nueva database
-    new_database = NotionDatabase(
-        user_id=current_user.id,
-        notion_database_id=database.notion_database_id,
-        database_name=database.database_name,
-        database_url=database.database_url
-    )
-    
-    db.add(new_database)
-    db.commit()
-    db.refresh(new_database)
-    
-    print(f"✅ Database de Notion guardada: {new_database.database_name} (Usuario: {current_user.username})")
-    
-    return new_database.to_dict()
+
+    # Crear nueva database usando el helper
+    try:
+        new_database = create_notion_database_resource(db, current_user.id, {
+            "notion_database_id": database.notion_database_id,
+            "database_name": database.database_name,
+            "database_url": database.database_url
+        })
+
+        print(f"✅ Database de Notion guardada: {new_database.name} (Usuario: {current_user.username})")
+
+        return new_database.to_dict()
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
 
 
 @router.delete("/saved-databases/{database_id}")
@@ -149,24 +164,27 @@ def delete_saved_database(
     """
     Elimina una database guardada. También elimina todas sus asociaciones con channels.
     """
+    from auth.models import Resource
+
     current_user = get_current_user(payload, db)
-    
-    database = db.query(NotionDatabase).filter(
-        NotionDatabase.id == database_id,
-        NotionDatabase.user_id == current_user.id
+
+    database = db.query(Resource).filter(
+        Resource.id == database_id,
+        Resource.user_id == current_user.id
     ).first()
-    
+
     if not database:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Database no encontrada"
         )
-    
-    db.delete(database)
+
+    # Desactivar en lugar de eliminar físicamente (para mantener integridad referencial)
+    database.is_active = False
     db.commit()
-    
-    print(f"✅ Database de Notion eliminada: {database.database_name} (Usuario: {current_user.username})")
-    
+
+    print(f"✅ Database de Notion desactivada: {database.name} (Usuario: {current_user.username})")
+
     return {
         "message": "Database eliminada exitosamente"
     }
