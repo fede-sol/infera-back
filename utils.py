@@ -209,7 +209,11 @@ def background_batch_analysis_task(messages: List[Dict[str, Any]], openai_adapte
         inputs = [{"usuario": message["user_profile"], "mensaje": message["slack_item"]["messageText"]} for message in messages]
         #print(f"Inputs: {json.dumps(inputs, indent=2)}")
 
-        messages_text = ""
+        notion_databases = []
+        for message in messages:
+            notion_databases.extend(message["notion_databases"])
+
+        messages_text = f"Base de datos de Notion: {json.dumps(notion_databases, indent=2)}\n"
         for message in inputs:
             messages_text += f"Usuario: {message['usuario']}\nMensaje: {message['mensaje']}\n"
 
@@ -264,6 +268,7 @@ def background_batch_analysis_task(messages: List[Dict[str, Any]], openai_adapte
         return response_data
     except Exception as e:
         print(f"❌ Error en análisis: {e}")
+        background_batch_analysis_task(messages=messages, openai_adapter=openai_adapter, table=table)
         return {
             "response": f"Error procesando la solicitud: {str(e)}",
             "error": True,
@@ -276,20 +281,23 @@ def background_batch_analysis_task(messages: List[Dict[str, Any]], openai_adapte
 class MessageBatch:
     """Clase para representar un batch de mensajes"""
 
-    def __init__(self, channel_id: str, user_id: int, db: Session = None):
+    def __init__(self, channel_id: str, user_id: int, notion_databases: list, db: Session = None):
         self.channel_id = channel_id
         self.user_id = user_id
+        self.notion_databases = notion_databases
         self.db = db
         self.messages: List[Dict[str, Any]] = []
         self.created_at = datetime.now()
         self.timeout_timer = None
 
-    def add_message(self, slack_item: Dict[str, Any], user_profile: Dict[str, Any], openai_agent):
+    def add_message(self, slack_item: Dict[str, Any], user_profile: Dict[str, Any], openai_agent, notion_databases: list, classification: str):
         """Agrega un mensaje al batch"""
         self.messages.append({
             'slack_item': slack_item,
             'user_profile': user_profile,
             'openai_agent': openai_agent,
+            'notion_databases': notion_databases,
+            'classification': classification,
             'added_at': datetime.now()
         })
 
@@ -308,7 +316,7 @@ batch_timers: Dict[str, threading.Timer] = {}
 BATCH_TIMEOUT_SECONDS = int(os.getenv('BATCH_TIMEOUT_SECONDS', '30'))  # 30 segundos por defecto
 
 
-def add_message_to_batch(channel_id: str, slack_item: Dict[str, Any], user_profile: Dict[str, Any], openai_agent, user_id: int, db: Session):
+def add_message_to_batch(channel_id: str, slack_item: Dict[str, Any], user_profile: Dict[str, Any], openai_agent, user_id: int, notion_databases: list,classification: str, db: Session):
     """
     Agrega un mensaje al batch correspondiente al canal.
     Si no existe un batch para el canal, crea uno nuevo.
@@ -317,12 +325,12 @@ def add_message_to_batch(channel_id: str, slack_item: Dict[str, Any], user_profi
 
     # Obtener o crear batch para el canal
     if message_batches[channel_id] is None:
-        message_batches[channel_id] = MessageBatch(channel_id, user_id, db)
+        message_batches[channel_id] = MessageBatch(channel_id, user_id, notion_databases, db)
 
     batch = message_batches[channel_id]
 
     # Agregar mensaje al batch
-    batch.add_message(slack_item, user_profile, openai_agent)
+    batch.add_message(slack_item, user_profile, openai_agent, notion_databases, classification)
 
     # Cancelar timer existente si hay uno
     if channel_id in batch_timers and batch_timers[channel_id]:
@@ -337,7 +345,6 @@ def add_message_to_batch(channel_id: str, slack_item: Dict[str, Any], user_profi
     batch_timers[channel_id].start()
 
     print(f"📥 Mensaje agregado al batch del canal {channel_id}. Total mensajes en batch: {len(batch.messages)}")
-
 
 def process_message_batch(channel_id: str):
     """
@@ -358,25 +365,38 @@ def process_message_batch(channel_id: str):
         batch_timers[channel_id].cancel()
         del batch_timers[channel_id]
 
+    analysis_needed = False
+
+    for message in batch.messages:
+        if message["classification"] in ["DECISION", "ACTION_ITEM", "KNOWLEDGE_SHARE"]:
+            analysis_needed = True
+            break
+
     try:
-        print(f"🔄 Procesando batch del canal {channel_id}")
+        if analysis_needed:
+            print(f"🔄 Procesando batch del canal {channel_id}")
+            messages = batch.messages.copy()
+            openai_adapter = batch.messages[0]["openai_agent"]
+            message_batches[channel_id] = None
 
-        # Ejecutar el background analysis task para este mensaje
-        background_batch_analysis_task(
-            messages=batch.messages,
-            openai_adapter=batch.messages[0]["openai_agent"],
-            table=get_table()
-        )
+            # Ejecutar el background analysis task para este mensaje
+            background_batch_analysis_task(
+                messages=messages,
+                openai_adapter=openai_adapter,
+                table=get_table()
+            )
 
-        print(f"✅ Batch del canal {channel_id} procesado completamente ({len(batch.messages)} mensajes)")
+            print(f"✅ Batch del canal {channel_id} procesado completamente ({len(batch.messages)} mensajes)")
 
         # Limpiar el batch después del procesamiento
-        message_batches[channel_id] = None
 
     except Exception as e:
         print(f"❌ Error procesando batch del canal {channel_id}: {e}")
         # En caso de error, limpiar el batch también
-        message_batches[channel_id] = None
+
+
+    message_batches[channel_id] = None
+    print(f"✅ Batch del canal {channel_id} limpiado")
 
 
 def get_batch_status(channel_id: str) -> Dict[str, Any]:

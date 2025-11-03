@@ -84,7 +84,7 @@ def get_user_decisions_count(user_id: int, db: Session) -> int:
 
         # Escanear la tabla buscando decisiones del usuario
         response = table.scan(
-            FilterExpression=Attr('userId').eq(user_id) & Attr('classification').eq('DECISION')
+            FilterExpression=Attr('userId').eq(user_id) & Attr('classification').eq('DECISION') | Attr('classification').eq('ACTION_ITEM')
         )
 
         count = len(response.get('Items', []))
@@ -92,7 +92,7 @@ def get_user_decisions_count(user_id: int, db: Session) -> int:
         # Manejar paginación si hay muchos resultados
         while 'LastEvaluatedKey' in response:
             response = table.scan(
-                FilterExpression=Attr('userId').eq(user_id) & Attr('classification').eq('DECISION'),
+                FilterExpression=Attr('userId').eq(user_id) & Attr('classification').eq('DECISION') | Attr('classification').eq('ACTION_ITEM'),
                 ExclusiveStartKey=response['LastEvaluatedKey']
             )
             count += len(response.get('Items', []))

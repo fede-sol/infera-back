@@ -199,6 +199,8 @@ async def slack_messages_webhook(request: Request, background_tasks: BackgroundT
             channel_name
         )
 
+        print(result)
+
         # 10. Guardar clasificación en DynamoDB (esto se mantiene inmediato)
         if TABLE:
             success = save_to_dynamodb(TABLE, item_to_save)
@@ -209,14 +211,17 @@ async def slack_messages_webhook(request: Request, background_tasks: BackgroundT
         else:
             print("⚠️ ADVERTENCIA: No se guardó el mensaje (conexión DynamoDB no disponible)")
 
+
         # 11. Agregar mensaje al sistema de batching para procesamiento posterior
         print(f"📥 Agregando mensaje al batch del canal {slack_item['channelId']}")
         add_message_to_batch(
             channel_id=slack_item["channelId"],
             slack_item=slack_item,
+            classification=result["classification"],
             user_profile=user_profile,
             openai_agent=open_ai_agent,
             user_id=user.id,
+            notion_databases=notion_databases,
             db=db
         )
 
